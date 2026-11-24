@@ -1,0 +1,141 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Lab 9 solution (instructor demo): the same maintenance helpers as
+  lab9-incident.yaml, rebuilt with preventive controls. Stack name lab9-secure.
+
+# 予防的コントロール (preventive controls) の見本です。
+# lab9-incident.yaml の 4 つの問題を、デプロイする前の設計図の段階で防ぎます。
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the maintenance network profile
+  AdminCidr:
+    Type: String
+    Description: Office IP range allowed to reach SSH (for example 203.0.113.10/32)
+    Default: 203.0.113.10/32
+    # 問題 4 の予防: /16 より広い範囲 (0.0.0.0/0 など) はここで入力エラーになり、スタックを作れない
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/(1[6-9]|2[0-9]|3[0-2])$'
+    ConstraintDescription: Must be a single office range from /16 to /32. 0.0.0.0/0 is not allowed.
+
+Resources:
+  # 問題 1 の予防: パスワード付きの管理者ユーザーを作らない
+  # 代わりにロールを使う。MFA でサインインした本人だけが引き受けられ、権限は読み取りのみ、1 時間で切れる
+  SupportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lab9-support-role
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SameAccountWithMfaOnly
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "sts:AssumeRole"
+            Condition:
+              Bool:
+                "aws:MultiFactorAuthPresent": "true"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: Purpose
+          Value: maintenance
+
+  # 問題 2 の予防: 長期のアクセスキーを作らない
+  # サービスはロールを使い、一時的な認証情報が自動で配られる。権限はこのバケットの読み書きだけ
+  SyncRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lab9-sync-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: sync-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SyncThisBucketOnly
+                Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource: !Sub "${ExportBucket.Arn}/*"
+              - Sid: ListThisBucketOnly
+                Effect: Allow
+                Action: "s3:ListBucket"
+                Resource: !GetAtt ExportBucket.Arn
+      Tags:
+        - Key: Purpose
+          Value: maintenance
+
+  SyncInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: lab9-sync-profile
+      Roles:
+        - !Ref SyncRole
+
+  # 問題 3 の予防: バケットを公開できない設定で作る
+  # パブリックアクセスを 4 つともブロック、ACL は無効、保存時に暗号化
+  ExportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Purpose
+          Value: export
+
+  # Principal "*" は同じでも、こちらは Deny: 暗号化されていない通信 (HTTP) を誰からも拒否する
+  ExportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ExportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ExportBucket.Arn
+              - !Sub "${ExportBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  # 問題 4 の予防: SSH は会社の IP 範囲からだけ。RDP は開けない
+  # (さらに良いのは受信ルールなしで Session Manager を使うこと)
+  DebugSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: lab9-secure-debug-sg
+      GroupDescription: Maintenance SSH from the office range only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: maintenance ssh from office
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminCidr
+      Tags:
+        - Key: Name
+          Value: lab9-secure-debug-sg

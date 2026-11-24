@@ -16,3 +16,5 @@
 3. ダウンロードしたファイルを CloudFormation のビジュアルエディター（Infrastructure Composer）に読み込みます。手順は講師の指示に従ってください。
 
 すでに clone している場合は、`cloud-sec-labs` フォルダで `git pull` を実行すると最新になります。
+
+`lab9/lab9-secure.yaml` は解答例です。同じ構成を予防的コントロール付きで作り直したものです。
